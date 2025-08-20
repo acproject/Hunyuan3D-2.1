@@ -14,14 +14,8 @@ accelerate>=0.20.0
 opencv-python>=4.8.0
 numpy>=1.24.0
 
-# Utility libraries
-base64
-time
-os
-re
-logging
-tempfile
-json
+# Note: base64, time, os, re, logging, tempfile, json are Python standard library modules
+# and should not be listed in requirements.txt
 
 # Optional: For better performance with CUDA
 # xformers>=0.0.20  # Uncomment if using CUDA

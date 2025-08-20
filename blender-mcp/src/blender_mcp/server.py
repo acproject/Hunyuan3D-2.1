@@ -1,5 +1,5 @@
 # blender_mcp_server.py
-from mcp.server.fastmcp import FastMCP, Context, Image
+from fastmcp import FastMCP, Context, Image
 import socket
 import json
 import asyncio
