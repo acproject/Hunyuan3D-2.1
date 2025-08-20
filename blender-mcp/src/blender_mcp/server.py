@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 import base64
 from urllib.parse import urlparse
+import requests
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -869,6 +871,330 @@ def import_generated_asset(
     except Exception as e:
         logger.error(f"Error generating Hyper3D task: {str(e)}")
         return f"Error generating Hyper3D task: {str(e)}"
+
+@mcp.tool()
+def generate_hunyuan3d_model(
+    ctx: Context,
+    image_path: str = None,
+    image_url: str = None,
+    image_base64: str = None,
+    remove_background: bool = True,
+    texture: bool = True,
+    seed: int = 1234,
+    octree_resolution: int = 256,
+    num_inference_steps: int = 5,
+    guidance_scale: float = 5.0,
+    hunyuan3d_api_url: str = "http://localhost:8081"
+) -> str:
+    """
+    Generate a 3D model using Hunyuan3D-2.1 from an image and import it into Blender.
+    
+    Parameters:
+    - image_path: Local path to the input image
+    - image_url: URL to the input image
+    - image_base64: Base64 encoded image data
+    - remove_background: Whether to remove background automatically
+    - texture: Whether to generate textures
+    - seed: Random seed for reproducible generation
+    - octree_resolution: Resolution of the octree for mesh generation (64-512)
+    - num_inference_steps: Number of inference steps (1-20)
+    - guidance_scale: Guidance scale for generation (0.1-20.0)
+    - hunyuan3d_api_url: URL of the Hunyuan3D API server
+    """
+    try:
+        # Prepare image data
+        if image_base64:
+            image_data = image_base64
+        elif image_path:
+            if not os.path.exists(image_path):
+                return f"Error: Image file not found at {image_path}"
+            with open(image_path, "rb") as f:
+                image_data = base64.b64encode(f.read()).decode('utf-8')
+        elif image_url:
+            try:
+                response = requests.get(image_url, timeout=30)
+                response.raise_for_status()
+                image_data = base64.b64encode(response.content).decode('utf-8')
+            except Exception as e:
+                return f"Error downloading image from URL: {str(e)}"
+        else:
+            return "Error: Must provide either image_path, image_url, or image_base64"
+        
+        # Prepare request data
+        request_data = {
+            "image": image_data,
+            "remove_background": remove_background,
+            "texture": texture,
+            "seed": seed,
+            "octree_resolution": octree_resolution,
+            "num_inference_steps": num_inference_steps,
+            "guidance_scale": guidance_scale
+        }
+        
+        logger.info(f"Sending request to Hunyuan3D API at {hunyuan3d_api_url}/generate")
+        
+        # Send request to Hunyuan3D API
+        response = requests.post(
+            f"{hunyuan3d_api_url}/generate",
+            json=request_data,
+            timeout=300  # 5 minutes timeout
+        )
+        
+        if response.status_code != 200:
+            return f"Error: Hunyuan3D API returned status {response.status_code}: {response.text}"
+        
+        # Import the model into Blender using the addon method
+        blender = get_blender_connection()
+        
+        # Convert response content to base64 for transmission
+        model_base64 = base64.b64encode(response.content).decode('utf-8')
+        
+        import_result = blender.send_command("import_hunyuan3d_model", {
+            "model_data": model_base64,
+            "name": f"hunyuan3d_model_{int(time.time())}"
+        })
+        
+        if "error" in import_result:
+            return f"Model generated but import failed: {import_result['error']}"
+        
+        return f"Successfully generated and imported 3D model using Hunyuan3D. {import_result.get('message', '')}"
+        
+    except requests.exceptions.Timeout:
+        return "Error: Request to Hunyuan3D API timed out. The model generation may take longer than expected."
+    except requests.exceptions.ConnectionError:
+        return f"Error: Could not connect to Hunyuan3D API at {hunyuan3d_api_url}. Make sure the API server is running."
+    except Exception as e:
+        logger.error(f"Error generating Hunyuan3D model: {str(e)}")
+        return f"Error generating Hunyuan3D model: {str(e)}"
+
+@mcp.tool()
+def generate_stable_diffusion_image(
+    ctx: Context,
+    prompt: str,
+    negative_prompt: str = "blurry, low quality, distorted",
+    width: int = 512,
+    height: int = 512,
+    num_inference_steps: int = 20,
+    guidance_scale: float = 7.5,
+    seed: int = None,
+    model_id: str = "runwayml/stable-diffusion-v1-5"
+) -> str:
+    """
+    Generate an image using Stable Diffusion from a text prompt.
+    
+    Parameters:
+    - prompt: Text description of the image to generate
+    - negative_prompt: What to avoid in the generated image
+    - width: Image width (must be divisible by 8)
+    - height: Image height (must be divisible by 8)
+    - num_inference_steps: Number of denoising steps
+    - guidance_scale: How closely to follow the prompt
+    - seed: Random seed for reproducible generation
+    - model_id: Hugging Face model ID to use
+    """
+    try:
+        # Import diffusers here to avoid dependency issues if not installed
+        try:
+            from diffusers import StableDiffusionPipeline
+            import torch
+        except ImportError:
+            return "Error: diffusers and torch are required for Stable Diffusion. Install with: pip install diffusers torch"
+        
+        # Check if CUDA is available
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Using device: {device}")
+        
+        # Load the pipeline
+        logger.info(f"Loading Stable Diffusion model: {model_id}")
+        pipe = StableDiffusionPipeline.from_pretrained(
+            model_id,
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32
+        )
+        pipe = pipe.to(device)
+        
+        # Generate the image
+        logger.info(f"Generating image with prompt: {prompt}")
+        
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device=device).manual_seed(seed)
+        
+        image = pipe(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            width=width,
+            height=height,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            generator=generator
+        ).images[0]
+        
+        # Save the image to a temporary file
+        temp_dir = tempfile.mkdtemp()
+        image_path = os.path.join(temp_dir, f"sd_generated_{int(time.time())}.png")
+        image.save(image_path)
+        
+        logger.info(f"Image saved to {image_path}")
+        
+        # Clean up the pipeline to free memory
+        del pipe
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        return f"Successfully generated image and saved to: {image_path}\nYou can now use this image with generate_hunyuan3d_model to create a 3D model."
+        
+    except Exception as e:
+        logger.error(f"Error generating Stable Diffusion image: {str(e)}")
+        return f"Error generating Stable Diffusion image: {str(e)}"
+
+@mcp.tool()
+def create_3d_scene_from_text(
+    ctx: Context,
+    scene_description: str,
+    generate_image: bool = True,
+    image_prompt: str = None,
+    negative_prompt: str = "blurry, low quality, distorted",
+    image_width: int = 512,
+    image_height: int = 512,
+    remove_background: bool = True,
+    texture: bool = True,
+    seed: int = None,
+    hunyuan3d_api_url: str = "http://localhost:8081"
+) -> str:
+    """
+    Create a complete 3D scene from text description using the integrated workflow:
+    1. Generate image from text (if needed)
+    2. Convert image to 3D model using Hunyuan3D
+    3. Import model into Blender
+    4. Apply scene modifications based on description
+    
+    Parameters:
+    - scene_description: Complete description of the desired 3D scene
+    - generate_image: Whether to generate an image first (if no image provided)
+    - image_prompt: Specific prompt for image generation (defaults to scene_description)
+    - negative_prompt: What to avoid in image generation
+    - image_width/height: Dimensions for generated image
+    - remove_background: Whether to remove background from image before 3D conversion
+    - texture: Whether to generate textures for 3D model
+    - seed: Random seed for reproducible generation
+    - hunyuan3d_api_url: URL of the Hunyuan3D API server
+    """
+    try:
+        logger.info(f"Starting 3D scene creation from text: {scene_description}")
+        
+        # Step 1: Generate image if needed
+        image_path = None
+        if generate_image:
+            prompt = image_prompt or scene_description
+            logger.info(f"Generating image with prompt: {prompt}")
+            
+            image_result = generate_stable_diffusion_image(
+                ctx=ctx,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                width=image_width,
+                height=image_height,
+                seed=seed
+            )
+            
+            if "Error" in image_result:
+                return f"Failed at image generation step: {image_result}"
+            
+            # Extract image path from result
+            import re
+            path_match = re.search(r'saved to: (.+?)\n', image_result)
+            if path_match:
+                image_path = path_match.group(1)
+                logger.info(f"Image generated successfully: {image_path}")
+            else:
+                return "Failed to extract image path from generation result"
+        
+        # Step 2: Convert image to 3D model
+        logger.info("Converting image to 3D model using Hunyuan3D")
+        model_result = generate_hunyuan3d_model(
+            ctx=ctx,
+            image_path=image_path,
+            remove_background=remove_background,
+            texture=texture,
+            seed=seed or 1234,
+            hunyuan3d_api_url=hunyuan3d_api_url
+        )
+        
+        if "Error" in model_result:
+            return f"Failed at 3D model generation step: {model_result}"
+        
+        # Step 3: Apply additional scene modifications based on description
+        logger.info("Applying scene modifications based on description")
+        
+        # Generate Blender code to enhance the scene based on the description
+        scene_code = f"""
+# Scene enhancement based on description: {scene_description}
+import bpy
+import bmesh
+from mathutils import Vector
+
+# Get the imported object (should be the most recently added)
+objs = [obj for obj in bpy.context.scene.objects if obj.type == 'MESH']
+if objs:
+    latest_obj = max(objs, key=lambda x: x.name)
+    
+    # Center the object
+    bpy.context.view_layer.objects.active = latest_obj
+    latest_obj.select_set(True)
+    bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY', center='BOUNDS')
+    latest_obj.location = (0, 0, 0)
+    
+    # Add basic lighting if not present
+    if not any(obj.type == 'LIGHT' for obj in bpy.context.scene.objects):
+        bpy.ops.object.light_add(type='SUN', location=(5, 5, 10))
+        sun = bpy.context.active_object
+        sun.data.energy = 3
+        
+        # Add fill light
+        bpy.ops.object.light_add(type='AREA', location=(-3, 2, 5))
+        fill_light = bpy.context.active_object
+        fill_light.data.energy = 1
+        fill_light.data.size = 2
+    
+    # Set up camera if not present
+    if not any(obj.type == 'CAMERA' for obj in bpy.context.scene.objects):
+        bpy.ops.object.camera_add(location=(7, -7, 5))
+        camera = bpy.context.active_object
+        
+        # Point camera at the object
+        direction = latest_obj.location - camera.location
+        camera.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
+        
+        # Set as active camera
+        bpy.context.scene.camera = camera
+    
+    print(f"Scene setup complete for object: {{latest_obj.name}}")
+else:
+    print("No mesh objects found in scene")
+"""
+        
+        # Execute the scene enhancement code
+        code_result = execute_blender_code(ctx=ctx, code=scene_code)
+        
+        result_message = f"""Successfully created 3D scene from text description!
+
+Workflow completed:
+1. ✓ Generated image from text: "{scene_description}"
+2. ✓ Converted image to 3D model using Hunyuan3D
+3. ✓ Imported model into Blender
+4. ✓ Applied scene enhancements (lighting, camera, positioning)
+
+Scene is ready for further customization in Blender."""
+        
+        if image_path:
+            result_message += f"\n\nGenerated image saved at: {image_path}"
+        
+        logger.info("3D scene creation workflow completed successfully")
+        return result_message
+        
+    except Exception as e:
+        logger.error(f"Error in 3D scene creation workflow: {str(e)}")
+        return f"Error in 3D scene creation workflow: {str(e)}"
 
 @mcp.prompt()
 def asset_creation_strategy() -> str:

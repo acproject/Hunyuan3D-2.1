@@ -203,6 +203,7 @@ class BlenderMCPServer:
             "get_polyhaven_status": self.get_polyhaven_status,
             "get_hyper3d_status": self.get_hyper3d_status,
             "get_sketchfab_status": self.get_sketchfab_status,
+            "import_hunyuan3d_model": self.import_hunyuan3d_model,
         }
         
         # Add Polyhaven handlers only if enabled
@@ -1437,6 +1438,44 @@ class BlenderMCPServer:
             }
         except Exception as e:
             return {"succeed": False, "error": str(e)}
+    #endregion
+
+    #region Hunyuan3D API
+    def import_hunyuan3d_model(self, model_data, name="Hunyuan3D_Model"):
+        """Import a GLB model from Hunyuan3D API response"""
+        try:
+            import base64
+            
+            # Decode base64 model data
+            model_bytes = base64.b64decode(model_data)
+            
+            # Save to temporary file
+            temp_dir = tempfile.mkdtemp()
+            glb_file_path = os.path.join(temp_dir, f"{name}.glb")
+            
+            with open(glb_file_path, "wb") as f:
+                f.write(model_bytes)
+            
+            # Import the GLB model
+            bpy.ops.import_scene.gltf(filepath=glb_file_path)
+            
+            # Get the names of imported objects
+            imported_objects = [obj.name for obj in bpy.context.selected_objects]
+            
+            # Clean up temporary files
+            with suppress(Exception):
+                shutil.rmtree(temp_dir)
+            
+            return {
+                "success": True,
+                "message": "Hunyuan3D model imported successfully",
+                "imported_objects": imported_objects
+            }
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"error": f"Failed to import Hunyuan3D model: {str(e)}"}
     #endregion
 
     #region Sketchfab API
