@@ -884,7 +884,10 @@ def generate_hunyuan3d_model(
     octree_resolution: int = 256,
     num_inference_steps: int = 5,
     guidance_scale: float = 5.0,
-    hunyuan3d_api_url: str = "http://localhost:8081"
+    num_chunks: int = 8000,
+    face_count: int = 40000,
+    hunyuan3d_api_url: str = "http://localhost:8081",
+    use_async: bool = False
 ) -> str:
     """
     Generate a 3D model using Hunyuan3D-2.1 from an image and import it into Blender.
@@ -899,7 +902,10 @@ def generate_hunyuan3d_model(
     - octree_resolution: Resolution of the octree for mesh generation (64-512)
     - num_inference_steps: Number of inference steps (1-20)
     - guidance_scale: Guidance scale for generation (0.1-20.0)
+    - num_chunks: Number of chunks for processing (1000-20000)
+    - face_count: Maximum number of faces for texture generation (1000-100000)
     - hunyuan3d_api_url: URL of the Hunyuan3D API server
+    - use_async: Whether to use async generation (returns task ID for polling)
     """
     try:
         # Prepare image data
@@ -920,7 +926,7 @@ def generate_hunyuan3d_model(
         else:
             return "Error: Must provide either image_path, image_url, or image_base64"
         
-        # Prepare request data
+        # Prepare request data according to API models
         request_data = {
             "image": image_data,
             "remove_background": remove_background,
@@ -928,39 +934,61 @@ def generate_hunyuan3d_model(
             "seed": seed,
             "octree_resolution": octree_resolution,
             "num_inference_steps": num_inference_steps,
-            "guidance_scale": guidance_scale
+            "guidance_scale": guidance_scale,
+            "num_chunks": num_chunks,
+            "face_count": face_count
         }
         
-        logger.info(f"Sending request to Hunyuan3D API at {hunyuan3d_api_url}/generate")
+        if use_async:
+            # Use async endpoint for long-running tasks
+            logger.info(f"Sending async request to Hunyuan3D API at {hunyuan3d_api_url}/send")
+            response = requests.post(
+                f"{hunyuan3d_api_url}/send",
+                json=request_data,
+                timeout=60
+            )
+            
+            if response.status_code != 200:
+                return f"Error: Hunyuan3D API returned status {response.status_code}: {response.text}"
+            
+            result = response.json()
+            task_uid = result.get('uid')
+            
+            if not task_uid:
+                return "Error: No task UID returned from async API"
+            
+            return f"Async generation started. Task UID: {task_uid}. Use poll_hunyuan3d_status('{task_uid}') to check progress."
         
-        # Send request to Hunyuan3D API
-        response = requests.post(
-            f"{hunyuan3d_api_url}/generate",
-            json=request_data,
-            timeout=300  # 5 minutes timeout
-        )
-        
-        if response.status_code != 200:
-            return f"Error: Hunyuan3D API returned status {response.status_code}: {response.text}"
-        
-        # Import the model into Blender using the addon method
-        blender = get_blender_connection()
-        
-        # Convert response content to base64 for transmission
-        model_base64 = base64.b64encode(response.content).decode('utf-8')
-        
-        import_result = blender.send_command("import_hunyuan3d_model", {
-            "model_data": model_base64,
-            "name": f"hunyuan3d_model_{int(time.time())}"
-        })
-        
-        if "error" in import_result:
-            return f"Model generated but import failed: {import_result['error']}"
-        
-        return f"Successfully generated and imported 3D model using Hunyuan3D. {import_result.get('message', '')}"
+        else:
+            # Use synchronous endpoint
+            logger.info(f"Sending request to Hunyuan3D API at {hunyuan3d_api_url}/generate")
+            response = requests.post(
+                f"{hunyuan3d_api_url}/generate",
+                json=request_data,
+                timeout=600  # 10 minutes timeout for sync
+            )
+            
+            if response.status_code != 200:
+                return f"Error: Hunyuan3D API returned status {response.status_code}: {response.text}"
+            
+            # Import the model into Blender using the addon method
+            blender = get_blender_connection()
+            
+            # Convert response content to base64 for transmission
+            model_base64 = base64.b64encode(response.content).decode('utf-8')
+            
+            import_result = blender.send_command("import_hunyuan3d_model", {
+                "model_data": model_base64,
+                "name": f"hunyuan3d_model_{int(time.time())}"
+            })
+            
+            if "error" in import_result:
+                return f"Model generated but import failed: {import_result['error']}"
+            
+            return f"Successfully generated and imported 3D model using Hunyuan3D. {import_result.get('message', '')}"
         
     except requests.exceptions.Timeout:
-        return "Error: Request to Hunyuan3D API timed out. The model generation may take longer than expected."
+        return "Error: Request to Hunyuan3D API timed out. Try using use_async=True for long-running generations."
     except requests.exceptions.ConnectionError:
         return f"Error: Could not connect to Hunyuan3D API at {hunyuan3d_api_url}. Make sure the API server is running."
     except Exception as e:
@@ -977,7 +1005,9 @@ def generate_stable_diffusion_image(
     num_inference_steps: int = 20,
     guidance_scale: float = 7.5,
     seed: int = None,
-    model_id: str = "runwayml/stable-diffusion-v1-5"
+    model_id: str = "runwayml/stable-diffusion-v1-5",
+    use_local_api: bool = False,
+    api_url: str = "http://localhost:7860"
 ) -> str:
     """
     Generate an image using Stable Diffusion from a text prompt.
@@ -991,61 +1021,172 @@ def generate_stable_diffusion_image(
     - guidance_scale: How closely to follow the prompt
     - seed: Random seed for reproducible generation
     - model_id: Hugging Face model ID to use
+    - use_local_api: Whether to use local API (e.g., AUTOMATIC1111 WebUI)
+    - api_url: URL of the local Stable Diffusion API
     """
     try:
-        # Import diffusers here to avoid dependency issues if not installed
-        try:
-            from diffusers import StableDiffusionPipeline
-            import torch
-        except ImportError:
-            return "Error: diffusers and torch are required for Stable Diffusion. Install with: pip install diffusers torch"
+        if use_local_api:
+            # Use local API (e.g., AUTOMATIC1111 WebUI)
+            payload = {
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "width": width,
+                "height": height,
+                "steps": num_inference_steps,
+                "cfg_scale": guidance_scale,
+                "seed": seed if seed is not None else -1,
+                "sampler_name": "DPM++ 2M Karras"
+            }
+            
+            logger.info(f"Sending request to local Stable Diffusion API at {api_url}")
+            response = requests.post(
+                f"{api_url}/sdapi/v1/txt2img",
+                json=payload,
+                timeout=300
+            )
+            
+            if response.status_code != 200:
+                return f"Error: Local API returned status {response.status_code}: {response.text}"
+            
+            result = response.json()
+            if "images" not in result or not result["images"]:
+                return "Error: No images returned from local API"
+            
+            # Decode base64 image
+            image_data = base64.b64decode(result["images"][0])
+            temp_dir = tempfile.mkdtemp()
+            image_path = os.path.join(temp_dir, f"sd_generated_{int(time.time())}.png")
+            
+            with open(image_path, "wb") as f:
+                f.write(image_data)
+            
+            logger.info(f"Image saved to {image_path}")
+            return f"Successfully generated image using local API and saved to: {image_path}\nYou can now use this image with generate_hunyuan3d_model to create a 3D model."
         
-        # Check if CUDA is available
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"Using device: {device}")
+        else:
+            # Import diffusers here to avoid dependency issues if not installed
+            try:
+                from diffusers import StableDiffusionPipeline
+                import torch
+            except ImportError:
+                return "Error: diffusers and torch are required for Stable Diffusion. Install with: pip install diffusers torch"
+            
+            # Check if CUDA is available
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            logger.info(f"Using device: {device}")
+            
+            # Load the pipeline
+            logger.info(f"Loading Stable Diffusion model: {model_id}")
+            pipe = StableDiffusionPipeline.from_pretrained(
+                model_id,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32
+            )
+            pipe = pipe.to(device)
+            
+            # Generate the image
+            logger.info(f"Generating image with prompt: {prompt}")
+            
+            generator = None
+            if seed is not None:
+                generator = torch.Generator(device=device).manual_seed(seed)
+            
+            image = pipe(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                width=width,
+                height=height,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                generator=generator
+            ).images[0]
+            
+            # Save the image to a temporary file
+            temp_dir = tempfile.mkdtemp()
+            image_path = os.path.join(temp_dir, f"sd_generated_{int(time.time())}.png")
+            image.save(image_path)
+            
+            logger.info(f"Image saved to {image_path}")
+            
+            # Clean up the pipeline to free memory
+            del pipe
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            return f"Successfully generated image and saved to: {image_path}\nYou can now use this image with generate_hunyuan3d_model to create a 3D model."
         
-        # Load the pipeline
-        logger.info(f"Loading Stable Diffusion model: {model_id}")
-        pipe = StableDiffusionPipeline.from_pretrained(
-            model_id,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32
-        )
-        pipe = pipe.to(device)
-        
-        # Generate the image
-        logger.info(f"Generating image with prompt: {prompt}")
-        
-        generator = None
-        if seed is not None:
-            generator = torch.Generator(device=device).manual_seed(seed)
-        
-        image = pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            width=width,
-            height=height,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            generator=generator
-        ).images[0]
-        
-        # Save the image to a temporary file
-        temp_dir = tempfile.mkdtemp()
-        image_path = os.path.join(temp_dir, f"sd_generated_{int(time.time())}.png")
-        image.save(image_path)
-        
-        logger.info(f"Image saved to {image_path}")
-        
-        # Clean up the pipeline to free memory
-        del pipe
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        return f"Successfully generated image and saved to: {image_path}\nYou can now use this image with generate_hunyuan3d_model to create a 3D model."
-        
+    except requests.exceptions.ConnectionError:
+        return f"Error: Could not connect to local API at {api_url}. Make sure the API server is running."
     except Exception as e:
         logger.error(f"Error generating Stable Diffusion image: {str(e)}")
         return f"Error generating Stable Diffusion image: {str(e)}"
+
+@mcp.tool()
+def poll_hunyuan3d_status(
+    ctx: Context,
+    task_uid: str,
+    hunyuan3d_api_url: str = "http://localhost:8081"
+) -> str:
+    """
+    Poll the status of an async Hunyuan3D generation task.
+    
+    Parameters:
+    - task_uid: The task UID returned from async generation
+    - hunyuan3d_api_url: URL of the Hunyuan3D API server
+    """
+    try:
+        logger.info(f"Polling status for task {task_uid}")
+        
+        response = requests.get(
+            f"{hunyuan3d_api_url}/status/{task_uid}",
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            return f"Error: API returned status {response.status_code}: {response.text}"
+        
+        result = response.json()
+        status = result.get('status', 'unknown')
+        
+        if status == 'completed':
+            # Try to download and import the model
+            download_response = requests.get(
+                f"{hunyuan3d_api_url}/download/{task_uid}",
+                timeout=300
+            )
+            
+            if download_response.status_code == 200:
+                # Import the model into Blender
+                blender = get_blender_connection()
+                model_base64 = base64.b64encode(download_response.content).decode('utf-8')
+                
+                import_result = blender.send_command("import_hunyuan3d_model", {
+                    "model_data": model_base64,
+                    "name": f"hunyuan3d_model_{task_uid}"
+                })
+                
+                if "error" in import_result:
+                    return f"Task completed but import failed: {import_result['error']}"
+                
+                return f"Task completed successfully! Model imported to Blender. {import_result.get('message', '')}"
+            else:
+                return f"Task completed but download failed: {download_response.text}"
+        
+        elif status == 'failed':
+            error_msg = result.get('error', 'Unknown error')
+            return f"Task failed: {error_msg}"
+        
+        elif status == 'running':
+            progress = result.get('progress', 0)
+            return f"Task is running... Progress: {progress}%"
+        
+        else:
+            return f"Task status: {status}. Details: {result}"
+        
+    except requests.exceptions.ConnectionError:
+        return f"Error: Could not connect to Hunyuan3D API at {hunyuan3d_api_url}"
+    except Exception as e:
+        logger.error(f"Error polling Hunyuan3D status: {str(e)}")
+        return f"Error polling Hunyuan3D status: {str(e)}"
 
 @mcp.tool()
 def create_3d_scene_from_text(
@@ -1059,7 +1200,12 @@ def create_3d_scene_from_text(
     remove_background: bool = True,
     texture: bool = True,
     seed: int = None,
-    hunyuan3d_api_url: str = "http://localhost:8081"
+    hunyuan3d_api_url: str = "http://localhost:8081",
+    use_local_sd_api: bool = False,
+    sd_api_url: str = "http://localhost:7860",
+    use_async_hunyuan: bool = False,
+    num_chunks: int = 8000,
+    face_count: int = 40000
 ) -> str:
     """
     Create a complete 3D scene from text description using the integrated workflow:
@@ -1078,6 +1224,11 @@ def create_3d_scene_from_text(
     - texture: Whether to generate textures for 3D model
     - seed: Random seed for reproducible generation
     - hunyuan3d_api_url: URL of the Hunyuan3D API server
+    - use_local_sd_api: Whether to use local Stable Diffusion API
+    - sd_api_url: URL of the local Stable Diffusion API
+    - use_async_hunyuan: Whether to use async Hunyuan3D generation
+    - num_chunks: Number of chunks for Hunyuan3D processing
+    - face_count: Maximum number of faces for texture generation
     """
     try:
         logger.info(f"Starting 3D scene creation from text: {scene_description}")
@@ -1094,7 +1245,9 @@ def create_3d_scene_from_text(
                 negative_prompt=negative_prompt,
                 width=image_width,
                 height=image_height,
-                seed=seed
+                seed=seed,
+                use_local_api=use_local_sd_api,
+                api_url=sd_api_url
             )
             
             if "Error" in image_result:
@@ -1117,7 +1270,10 @@ def create_3d_scene_from_text(
             remove_background=remove_background,
             texture=texture,
             seed=seed or 1234,
-            hunyuan3d_api_url=hunyuan3d_api_url
+            hunyuan3d_api_url=hunyuan3d_api_url,
+            use_async=use_async_hunyuan,
+            num_chunks=num_chunks,
+            face_count=face_count
         )
         
         if "Error" in model_result:
