@@ -15,6 +15,51 @@ from urllib.parse import urlparse
 import requests
 import time
 
+# Import enhanced WebUI tools
+try:
+    from .enhanced_webui_tools import (
+        enhanced_generate_stable_diffusion_image,
+        batch_generate_images,
+        img2img_enhance,
+        get_webui_status
+    )
+    ENHANCED_WEBUI_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Enhanced WebUI tools not available: {e}")
+    ENHANCED_WEBUI_AVAILABLE = False
+
+# Import optimization tools
+try:
+    from .sd_optimization_presets import get_preset, list_presets, print_preset_info
+    from .sd_parameter_optimizer import (
+        SDParameterOptimizer, 
+        OptimizationContext, 
+        OptimizationGoal, 
+        HardwareProfile,
+        quick_optimize
+    )
+    OPTIMIZATION_TOOLS_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Optimization tools not available: {e}")
+    OPTIMIZATION_TOOLS_AVAILABLE = False
+
+# Try to import workflow manager
+try:
+    from .workflow_manager import (
+        WorkflowManager,
+        WorkflowConfig,
+        WorkflowStage,
+        GenerationMethod,
+        create_workflow_config,
+        execute_text_to_3d_workflow,
+        get_preset_config,
+        PRESET_CONFIGS
+    )
+    WORKFLOW_MANAGER_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Workflow manager not available: {e}")
+    WORKFLOW_MANAGER_AVAILABLE = False
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -1419,6 +1464,791 @@ def asset_creation_strategy() -> str:
     """
 
 # Main execution
+
+# Enhanced AUTOMATIC1111 WebUI MCP Tools
+
+@mcp.tool()
+def enhanced_txt2img(
+    ctx: Context,
+    prompt: str,
+    negative_prompt: str = "blurry, low quality, distorted, deformed",
+    width: int = 512,
+    height: int = 512,
+    steps: int = 20,
+    cfg_scale: float = 7.0,
+    seed: int = -1,
+    sampler_name: str = "DPM++ 2M Karras",
+    batch_size: int = 1,
+    n_iter: int = 1,
+    restore_faces: bool = False,
+    enable_hr: bool = False,
+    hr_scale: float = 2.0,
+    api_url: str = "http://localhost:7860",
+    save_parameters: bool = True
+) -> str:
+    """
+    Enhanced text-to-image generation using AUTOMATIC1111 WebUI with advanced parameters.
+    
+    This tool provides comprehensive image generation capabilities with support for:
+    - High-resolution upscaling
+    - Face restoration
+    - Batch generation
+    - Parameter saving
+    - Detailed error handling
+    
+    Parameters:
+    - prompt: Detailed description of the desired image
+    - negative_prompt: Elements to avoid in the generated image
+    - width: Image width in pixels (recommended: 512, 768, 1024)
+    - height: Image height in pixels (recommended: 512, 768, 1024)
+    - steps: Number of denoising steps (20-50 recommended)
+    - cfg_scale: Classifier-free guidance scale (7-15 recommended)
+    - seed: Random seed for reproducible results (-1 for random)
+    - sampler_name: Sampling method to use
+    - batch_size: Number of images to generate simultaneously
+    - n_iter: Number of iterations (batches) to run
+    - restore_faces: Enable face restoration for better portraits
+    - enable_hr: Enable high-resolution upscaling
+    - hr_scale: Upscaling factor for high-resolution mode
+    - api_url: AUTOMATIC1111 WebUI API endpoint
+    - save_parameters: Save generation parameters to JSON file
+    
+    Returns:
+    - Detailed generation results with file paths and parameters
+    """
+    if not ENHANCED_WEBUI_AVAILABLE:
+        return "❌ Enhanced WebUI tools are not available. Please check the installation."
+    
+    try:
+        result = enhanced_generate_stable_diffusion_image(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            width=width,
+            height=height,
+            steps=steps,
+            cfg_scale=cfg_scale,
+            seed=seed,
+            sampler_name=sampler_name,
+            batch_size=batch_size,
+            n_iter=n_iter,
+            restore_faces=restore_faces,
+            enable_hr=enable_hr,
+            hr_scale=hr_scale,
+            api_url=api_url,
+            save_parameters=save_parameters
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Enhanced txt2img failed: {str(e)}")
+        return f"❌ Error in enhanced text-to-image generation: {str(e)}"
+
+@mcp.tool()
+def batch_txt2img(
+    ctx: Context,
+    prompts: str,
+    negative_prompt: str = "blurry, low quality, distorted, deformed",
+    width: int = 512,
+    height: int = 512,
+    steps: int = 20,
+    cfg_scale: float = 7.0,
+    batch_count: int = 4,
+    api_url: str = "http://localhost:7860"
+) -> str:
+    """
+    Generate multiple images from different prompts in batch mode.
+    
+    This tool allows efficient generation of multiple images with different prompts,
+    useful for creating variations or exploring different concepts.
+    
+    Parameters:
+    - prompts: Comma-separated list of prompts for batch generation
+    - negative_prompt: Elements to avoid in all generated images
+    - width: Image width in pixels
+    - height: Image height in pixels
+    - steps: Number of denoising steps
+    - cfg_scale: Classifier-free guidance scale
+    - batch_count: Number of images to generate per prompt
+    - api_url: AUTOMATIC1111 WebUI API endpoint
+    
+    Returns:
+    - Summary of batch generation results with file paths
+    """
+    if not ENHANCED_WEBUI_AVAILABLE:
+        return "❌ Enhanced WebUI tools are not available. Please check the installation."
+    
+    try:
+        prompt_list = [p.strip() for p in prompts.split(',') if p.strip()]
+        result = batch_generate_images(
+            prompts=prompt_list,
+            negative_prompt=negative_prompt,
+            width=width,
+            height=height,
+            steps=steps,
+            cfg_scale=cfg_scale,
+            batch_count=batch_count,
+            api_url=api_url
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Batch txt2img failed: {str(e)}")
+        return f"❌ Error in batch text-to-image generation: {str(e)}"
+
+@mcp.tool()
+def enhance_image(
+    ctx: Context,
+    image_path: str,
+    prompt: str,
+    negative_prompt: str = "blurry, low quality, distorted, deformed",
+    denoising_strength: float = 0.7,
+    steps: int = 20,
+    cfg_scale: float = 7.0,
+    seed: int = -1,
+    api_url: str = "http://localhost:7860"
+) -> str:
+    """
+    Enhance or modify an existing image using img2img functionality.
+    
+    This tool allows you to:
+    - Enhance image quality
+    - Modify existing images based on prompts
+    - Apply style transfers
+    - Fix or improve specific aspects of images
+    
+    Parameters:
+    - image_path: Path to the input image file
+    - prompt: Description of desired modifications or enhancements
+    - negative_prompt: Elements to avoid in the enhanced image
+    - denoising_strength: How much to change the original image (0.1-1.0)
+    - steps: Number of denoising steps
+    - cfg_scale: Classifier-free guidance scale
+    - seed: Random seed for reproducible results
+    - api_url: AUTOMATIC1111 WebUI API endpoint
+    
+    Returns:
+    - Path to the enhanced image and generation details
+    """
+    if not ENHANCED_WEBUI_AVAILABLE:
+        return "❌ Enhanced WebUI tools are not available. Please check the installation."
+    
+    try:
+        result = img2img_enhance(
+            image_path=image_path,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            denoising_strength=denoising_strength,
+            steps=steps,
+            cfg_scale=cfg_scale,
+            seed=seed,
+            api_url=api_url
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Image enhancement failed: {str(e)}")
+        return f"❌ Error in image enhancement: {str(e)}"
+
+@mcp.tool()
+def check_webui_status(
+    ctx: Context,
+    api_url: str = "http://localhost:7860"
+) -> str:
+    """
+    Check the status and capabilities of AUTOMATIC1111 WebUI server.
+    
+    This tool provides comprehensive information about:
+    - Server connectivity and health
+    - Available models and samplers
+    - Current generation progress
+    - System capabilities
+    
+    Parameters:
+    - api_url: AUTOMATIC1111 WebUI API endpoint to check
+    
+    Returns:
+    - Detailed status report of the WebUI server
+    """
+    if not ENHANCED_WEBUI_AVAILABLE:
+        return "❌ Enhanced WebUI tools are not available. Please check the installation."
+    
+    try:
+        result = get_webui_status(api_url=api_url)
+        return result
+    except Exception as e:
+        logger.error(f"WebUI status check failed: {str(e)}")
+        return f"❌ Error checking WebUI status: {str(e)}"
+
+@mcp.tool()
+def create_enhanced_3d_scene(
+    ctx: Context,
+    scene_description: str,
+    image_prompt: str = None,
+    use_enhanced_generation: bool = True,
+    image_width: int = 768,
+    image_height: int = 768,
+    steps: int = 30,
+    cfg_scale: float = 8.0,
+    enable_hr: bool = True,
+    hr_scale: float = 1.5,
+    api_url: str = "http://localhost:7860",
+    hunyuan3d_url: str = "http://localhost:8080"
+) -> str:
+    """
+    Create a complete 3D scene using enhanced image generation and 3D model creation.
+    
+    This tool combines enhanced AUTOMATIC1111 WebUI image generation with Hunyuan3D
+    model creation to produce high-quality 3D scenes from text descriptions.
+    
+    Parameters:
+    - scene_description: Overall description of the desired 3D scene
+    - image_prompt: Specific prompt for image generation (uses scene_description if not provided)
+    - use_enhanced_generation: Use enhanced WebUI tools for better quality
+    - image_width: Width for generated images (recommended: 768 or 1024)
+    - image_height: Height for generated images (recommended: 768 or 1024)
+    - steps: Number of denoising steps for image generation
+    - cfg_scale: Classifier-free guidance scale
+    - enable_hr: Enable high-resolution upscaling
+    - hr_scale: Upscaling factor for high-resolution mode
+    - api_url: AUTOMATIC1111 WebUI API endpoint
+    - hunyuan3d_url: Hunyuan3D API endpoint
+    
+    Returns:
+    - Complete workflow results with generated assets and scene information
+    """
+    try:
+        # Use enhanced image generation if available and requested
+        if use_enhanced_generation and ENHANCED_WEBUI_AVAILABLE:
+            prompt = image_prompt or scene_description
+            
+            # Generate high-quality image using enhanced tools
+            image_result = enhanced_generate_stable_diffusion_image(
+                prompt=prompt,
+                negative_prompt="blurry, low quality, distorted, deformed, ugly, bad anatomy",
+                width=image_width,
+                height=image_height,
+                steps=steps,
+                cfg_scale=cfg_scale,
+                enable_hr=enable_hr,
+                hr_scale=hr_scale,
+                restore_faces=True,
+                api_url=api_url,
+                save_parameters=True
+            )
+            
+            if "Error" in image_result:
+                return f"❌ Enhanced image generation failed: {image_result}"
+            
+            # Extract image path from result
+            import re
+            image_path_match = re.search(r'Image saved to: ([^\n]+)', image_result)
+            if not image_path_match:
+                return "❌ Could not extract image path from generation result"
+            
+            image_path = image_path_match.group(1)
+            
+        else:
+            # Fall back to standard generation
+            image_path = generate_stable_diffusion_image(
+                prompt=image_prompt or scene_description,
+                negative_prompt="blurry, low quality, distorted, deformed",
+                width=image_width,
+                height=image_height,
+                steps=steps,
+                guidance_scale=cfg_scale,
+                api_url=api_url
+            )
+        
+        # Generate 3D model from the image
+        model_result = generate_hunyuan3d_model(
+            image_path=image_path,
+            remove_background=True,
+            do_texture_mapping=True,
+            api_url=hunyuan3d_url
+        )
+        
+        if "Error" in str(model_result):
+            return f"❌ 3D model generation failed: {model_result}"
+        
+        # Create comprehensive result summary
+        result_summary = f"""
+🎨 Enhanced 3D Scene Creation Complete!
+
+📝 Scene Description: {scene_description}
+🖼️ Generated Image: {image_path}
+🎯 3D Model Result: {model_result}
+
+✅ Workflow Status:
+- ✓ Enhanced image generation {'(Enhanced)' if use_enhanced_generation and ENHANCED_WEBUI_AVAILABLE else '(Standard)'}
+- ✓ 3D model creation
+- ✓ Scene assembly
+
+💡 Next Steps:
+1. Check the generated 3D model in Blender
+2. Adjust scale and position as needed
+3. Add lighting and materials if desired
+4. Consider generating additional assets for the scene
+        """
+        
+        return result_summary
+        
+    except Exception as e:
+        logger.error(f"Enhanced 3D scene creation failed: {str(e)}")
+        return f"❌ Error in enhanced 3D scene creation: {str(e)}"
+
+@mcp.tool()
+def get_sd_presets(ctx: Context) -> str:
+    """
+    获取所有可用的Stable Diffusion预设配置
+    
+    Returns:
+        str: 包含所有预设信息的JSON字符串
+    """
+    if not OPTIMIZATION_TOOLS_AVAILABLE:
+        return json.dumps({
+            "success": False,
+            "error": "Optimization tools not available",
+            "message": "Please ensure sd_optimization_presets module is properly installed"
+        })
+    
+    try:
+        presets = list_presets()
+        return json.dumps({
+            "success": True,
+            "presets": presets,
+            "count": len(presets)
+        })
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e)
+        })
+
+@mcp.tool()
+def optimize_sd_parameters(
+    ctx: Context,
+    goal: str = "quality",
+    hardware: str = "medium",
+    image_type: str = "general",
+    time_budget: int = 60,
+    quality_preference: float = 0.7
+) -> str:
+    """
+    智能优化Stable Diffusion参数
+    
+    Args:
+        goal: 优化目标 (speed/quality/balanced)
+        hardware: 硬件配置 (low/medium/high/ultra)
+        image_type: 图像类型 (portrait/landscape/3d_model/general)
+        time_budget: 时间预算（秒）
+        quality_preference: 质量偏好 (0.0-1.0)
+    
+    Returns:
+        str: 优化后的参数配置JSON
+    """
+    if not OPTIMIZATION_TOOLS_AVAILABLE:
+        return json.dumps({
+            "success": False,
+            "error": "Optimization tools not available",
+            "message": "Please ensure optimization modules are properly installed"
+        })
+    
+    try:
+        # 映射字符串到枚举
+        goal_map = {
+            "speed": OptimizationGoal.SPEED,
+            "quality": OptimizationGoal.QUALITY,
+            "balanced": OptimizationGoal.BALANCED
+        }
+        
+        hardware_map = {
+            "low": HardwareProfile.LOW_END,
+            "medium": HardwareProfile.MEDIUM,
+            "high": HardwareProfile.HIGH_END,
+            "ultra": HardwareProfile.ULTRA
+        }
+        
+        optimizer = SDParameterOptimizer()
+        context = OptimizationContext(
+            goal=goal_map.get(goal, OptimizationGoal.QUALITY),
+            hardware=hardware_map.get(hardware, HardwareProfile.MEDIUM),
+            image_type=image_type,
+            time_budget=time_budget,
+            quality_preference=quality_preference
+        )
+        
+        optimized_params = optimizer.optimize_parameters(context)
+        
+        return json.dumps({
+            "success": True,
+            "optimized_parameters": optimized_params,
+            "context": {
+                "goal": goal,
+                "hardware": hardware,
+                "image_type": image_type,
+                "time_budget": time_budget,
+                "quality_preference": quality_preference
+            }
+        })
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e)
+        })
+
+@mcp.tool()
+def quick_sd_optimize(
+    ctx: Context,
+    prompt: str,
+    goal: str = "quality",
+    hardware: str = "medium"
+) -> str:
+    """
+    快速优化Stable Diffusion参数
+    
+    Args:
+        prompt: 图像生成提示词
+        goal: 优化目标 (speed/quality/balanced)
+        hardware: 硬件配置 (low/medium/high/ultra)
+    
+    Returns:
+        str: 快速优化后的参数配置JSON
+    """
+    if not OPTIMIZATION_TOOLS_AVAILABLE:
+        return json.dumps({
+            "success": False,
+            "error": "Optimization tools not available",
+            "message": "Please ensure optimization modules are properly installed"
+        })
+    
+    try:
+        # 映射字符串到枚举
+        goal_map = {
+            "speed": OptimizationGoal.SPEED,
+            "quality": OptimizationGoal.QUALITY,
+            "balanced": OptimizationGoal.BALANCED
+        }
+        
+        hardware_map = {
+            "low": HardwareProfile.LOW_END,
+            "medium": HardwareProfile.MEDIUM,
+            "high": HardwareProfile.HIGH_END,
+            "ultra": HardwareProfile.ULTRA
+        }
+        
+        optimized_params = quick_optimize(
+            prompt=prompt,
+            goal=goal_map.get(goal, OptimizationGoal.QUALITY),
+            hardware=hardware_map.get(hardware, HardwareProfile.MEDIUM)
+        )
+        
+        return json.dumps({
+            "success": True,
+            "optimized_parameters": optimized_params,
+            "prompt": prompt,
+            "optimization_settings": {
+                "goal": goal,
+                "hardware": hardware
+            }
+        })
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e)
+        })
+
+@mcp.tool()
+def optimized_txt2img(
+    ctx: Context,
+    prompt: str,
+    optimization_goal: str = "quality",
+    hardware_profile: str = "medium",
+    negative_prompt: str = "blurry, low quality, distorted, deformed",
+    api_url: str = "http://localhost:7860",
+    custom_params: str = None
+) -> str:
+    """
+    使用优化参数生成图像
+    
+    Args:
+        prompt: 图像生成提示词
+        optimization_goal: 优化目标 (speed/quality/balanced)
+        hardware_profile: 硬件配置 (low/medium/high/ultra)
+        negative_prompt: 负面提示词
+        api_url: WebUI API地址
+        custom_params: 自定义参数（JSON字符串）
+    
+    Returns:
+        str: 生成结果JSON
+    """
+    if not OPTIMIZATION_TOOLS_AVAILABLE:
+        # 回退到标准生成
+        return enhanced_txt2img(
+            ctx, prompt, negative_prompt, 
+            api_url=api_url
+        )
+    
+    try:
+        # 获取优化参数
+        if custom_params:
+            params = json.loads(custom_params)
+        else:
+            goal_map = {
+                "speed": OptimizationGoal.SPEED,
+                "quality": OptimizationGoal.QUALITY,
+                "balanced": OptimizationGoal.BALANCED
+            }
+            
+            hardware_map = {
+                "low": HardwareProfile.LOW_END,
+                "medium": HardwareProfile.MEDIUM,
+                "high": HardwareProfile.HIGH_END,
+                "ultra": HardwareProfile.ULTRA
+            }
+            
+            params = quick_optimize(
+                prompt=prompt,
+                goal=goal_map.get(optimization_goal, OptimizationGoal.QUALITY),
+                hardware=hardware_map.get(hardware_profile, HardwareProfile.MEDIUM)
+            )
+        
+        # 使用优化参数调用增强版生成
+        return enhanced_txt2img(
+            ctx=ctx,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            width=params.get('width', 512),
+            height=params.get('height', 512),
+            steps=params.get('steps', 20),
+            cfg_scale=params.get('cfg_scale', 7.0),
+            seed=params.get('seed', -1),
+            sampler_name=params.get('sampler_name', 'DPM++ 2M Karras'),
+            batch_size=params.get('batch_size', 1),
+            restore_faces=params.get('restore_faces', False),
+            enable_hr=params.get('enable_hr', False),
+            hr_scale=params.get('hr_scale', 2.0),
+            api_url=api_url
+        )
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "fallback": "Using standard generation"
+        })
+
+@mcp.tool()
+def execute_text_to_3d_workflow(
+    ctx: Context,
+    description: str,
+    preset: str = "balanced",
+    custom_config: str = None
+) -> str:
+    """
+    Execute a complete text-to-3D scene creation workflow.
+    
+    Args:
+        description: Text description of the desired 3D scene
+        preset: Workflow preset ("fast", "balanced", "quality", "creative")
+        custom_config: Optional JSON string with custom workflow configuration
+    
+    Returns:
+        JSON string with workflow execution results
+    """
+    if not WORKFLOW_MANAGER_AVAILABLE:
+        return json.dumps({
+            "success": False,
+            "error": "Workflow manager not available",
+            "message": "Please ensure workflow_manager.py is properly installed"
+        })
+    
+    try:
+        # Parse custom config if provided
+        config_dict = None
+        if custom_config:
+            config_dict = json.loads(custom_config)
+        
+        # Execute workflow
+        from .workflow_manager import execute_text_to_3d_workflow as execute_workflow
+        result = execute_workflow(description, preset, config_dict)
+        
+        return json.dumps({
+            "success": True,
+            "workflow_result": result.__dict__ if hasattr(result, '__dict__') else str(result),
+            "preset_used": preset
+        })
+        
+    except json.JSONDecodeError:
+        return json.dumps({
+            "success": False,
+            "error": "Invalid JSON in custom_config parameter"
+        })
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"Workflow execution failed: {str(e)}"
+        })
+
+@mcp.tool()
+def get_workflow_presets(ctx: Context) -> str:
+    """
+    Get available workflow presets and their configurations.
+    
+    Returns:
+        JSON string with available presets and their descriptions
+    """
+    if not WORKFLOW_MANAGER_AVAILABLE:
+        return json.dumps({
+            "success": False,
+            "error": "Workflow manager not available"
+        })
+    
+    try:
+        from .workflow_manager import PRESET_CONFIGS
+        
+        presets_info = {}
+        for name, config in PRESET_CONFIGS.items():
+            presets_info[name] = {
+                "description": config.description,
+                "generation_method": config.generation_method.value,
+                "image_quality": config.image_quality,
+                "model_quality": config.model_quality,
+                "scene_complexity": config.scene_complexity,
+                "estimated_time": f"{config.estimated_time_minutes} minutes"
+            }
+        
+        return json.dumps({
+            "success": True,
+            "presets": presets_info
+        })
+        
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"Failed to get presets: {str(e)}"
+        })
+
+@mcp.tool()
+def create_custom_workflow(
+    ctx: Context,
+    name: str,
+    description: str,
+    generation_method: str = "hybrid",
+    image_quality: str = "medium",
+    model_quality: str = "medium",
+    scene_complexity: str = "medium",
+    enable_optimization: bool = True,
+    enable_post_processing: bool = True
+) -> str:
+    """
+    Create a custom workflow configuration.
+    
+    Args:
+        name: Name for the custom workflow
+        description: Description of the workflow
+        generation_method: "image_first", "model_first", or "hybrid"
+        image_quality: "low", "medium", "high", "ultra"
+        model_quality: "low", "medium", "high", "ultra"
+        scene_complexity: "simple", "medium", "complex"
+        enable_optimization: Whether to enable parameter optimization
+        enable_post_processing: Whether to enable post-processing
+    
+    Returns:
+        JSON string with the created workflow configuration
+    """
+    if not WORKFLOW_MANAGER_AVAILABLE:
+        return json.dumps({
+            "success": False,
+            "error": "Workflow manager not available"
+        })
+    
+    try:
+        from .workflow_manager import create_workflow_config, GenerationMethod
+        
+        # Convert string to enum
+        method_map = {
+            "image_first": GenerationMethod.IMAGE_FIRST,
+            "model_first": GenerationMethod.MODEL_FIRST,
+            "hybrid": GenerationMethod.HYBRID
+        }
+        
+        if generation_method not in method_map:
+            return json.dumps({
+                "success": False,
+                "error": f"Invalid generation method: {generation_method}"
+            })
+        
+        config = create_workflow_config(
+            name=name,
+            description=description,
+            generation_method=method_map[generation_method],
+            image_quality=image_quality,
+            model_quality=model_quality,
+            scene_complexity=scene_complexity,
+            enable_optimization=enable_optimization,
+            enable_post_processing=enable_post_processing
+        )
+        
+        return json.dumps({
+            "success": True,
+            "config": {
+                "name": config.name,
+                "description": config.description,
+                "generation_method": config.generation_method.value,
+                "image_quality": config.image_quality,
+                "model_quality": config.model_quality,
+                "scene_complexity": config.scene_complexity,
+                "enable_optimization": config.enable_optimization,
+                "enable_post_processing": config.enable_post_processing,
+                "estimated_time": f"{config.estimated_time_minutes} minutes"
+            }
+        })
+        
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"Failed to create workflow: {str(e)}"
+        })
+
+@mcp.tool()
+def get_workflow_status(
+    ctx: Context,
+    workflow_id: str = None
+) -> str:
+    """
+    Get the status of workflow execution.
+    
+    Args:
+        workflow_id: Optional workflow ID to check specific workflow status
+    
+    Returns:
+        JSON string with workflow status information
+    """
+    if not WORKFLOW_MANAGER_AVAILABLE:
+        return json.dumps({
+            "success": False,
+            "error": "Workflow manager not available"
+        })
+    
+    try:
+        # For now, return general status since we don't have persistent workflow tracking
+        status_info = {
+            "workflow_manager_available": True,
+            "supported_methods": ["image_first", "model_first", "hybrid"],
+            "available_presets": list(PRESET_CONFIGS.keys()) if 'PRESET_CONFIGS' in globals() else [],
+            "integration_status": {
+                "webui_available": ENHANCED_WEBUI_AVAILABLE if 'ENHANCED_WEBUI_AVAILABLE' in globals() else False,
+                "optimization_available": OPTIMIZATION_TOOLS_AVAILABLE if 'OPTIMIZATION_TOOLS_AVAILABLE' in globals() else False,
+                "polyhaven_available": _polyhaven_enabled if '_polyhaven_enabled' in globals() else False
+            }
+        }
+        
+        return json.dumps({
+            "success": True,
+            "status": status_info
+        })
+        
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"Failed to get workflow status: {str(e)}"
+        })
 
 def main():
     """Run the MCP server"""
